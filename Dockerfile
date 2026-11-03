@@ -1,20 +1,27 @@
-# base layer
-FROM python:3.10-slim
 
-# working dir.
+# Use Python 3.12 as the base image
+FROM python:3.12-slim
+
+# Set the working directory inside the container
 WORKDIR /app
 
-#copy requirements file
+# Prevent Python from creating .pyc files
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Display Python logs immediately
+ENV PYTHONUNBUFFERED=1
+
+# Copy the dependencies file into the container
 COPY requirements.txt .
 
-# installing dependencies
+# Install all required Python packages
 RUN pip install --no-cache-dir -r requirements.txt
 
-# copying all the files
+# Copy the application source code into the container
 COPY . .
 
-# EXPOSING THE PORTS
+# Document the port used by Streamlit
 EXPOSE 8501
 
-# CMD TO RUN THE FILE
-CMD ["streamlit","run","app.py"]
+# Start Streamlit and allow access from outside the container
+CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]

@@ -6,9 +6,7 @@ import plotly.express as px
 from src.brand_monitoring_ollama import backend as monitor
 
 
-# ============================================================
-# 1. STREAMLIT CONFIGURATION
-# ============================================================
+# =========================STREAMLIT CONFIGURATION==========================
 
 st.set_page_config(
     page_title="BrandPulse AI",
@@ -17,9 +15,7 @@ st.set_page_config(
 )
 
 
-# ============================================================
-# 2. INITIALIZATION
-# ============================================================
+# =======================INITIALIZATION=====================================
 
 @st.cache_resource
 def initialize_database():
@@ -46,9 +42,7 @@ def initialize_state():
 initialize_state()
 
 
-# ============================================================
-# 3. DATA ACCESS
-# ============================================================
+# ==========================DATA ACCESS============================
 
 def get_brand_data(brand: str) -> pd.DataFrame:
     """Load and clean stored Hacker News mentions."""
@@ -61,9 +55,7 @@ def get_brand_data(brand: str) -> pd.DataFrame:
     return monitor.clean_html(data)
 
 
-# ============================================================
-# 4. DATA COLLECTION
-# ============================================================
+# ======================== DATA COLLECTION==============================
 
 def fetch_brand_mentions(brand: str, pages: int) -> None:
     """Collect brand discussions from Hacker News."""
@@ -86,9 +78,7 @@ def fetch_brand_mentions(brand: str, pages: int) -> None:
     st.rerun()
 
 
-# ============================================================
-# 5. OLLAMA ANALYSIS
-# ============================================================
+# ==========================OLLAMA ANALYSIS=============================
 
 def analyze_brand_mentions(brand: str, pending_count: int) -> None:
     """Classify pending mentions using the backend batch processor."""
@@ -126,9 +116,7 @@ def analyze_brand_mentions(brand: str, pending_count: int) -> None:
     st.rerun()
 
 
-# ============================================================
-# 6. SIDEBAR
-# ============================================================
+# ============================SIDEBAR==========================
 
 def render_sidebar():
     with st.sidebar:
@@ -190,9 +178,7 @@ def render_sidebar():
     return brand, records
 
 
-# ============================================================
-# 7. DASHBOARD METRICS
-# ============================================================
+# ============================DASHBOARD METRICS====================
 
 def display_metrics(records: pd.DataFrame) -> None:
     """Display important brand monitoring statistics."""
@@ -223,9 +209,7 @@ def display_metrics(records: pd.DataFrame) -> None:
     col4.metric("High Urgency", int(high_urgency_count))
 
 
-# ============================================================
-# 8. DATA VISUALIZATION
-# ============================================================
+# ===========================DATA VISUALIZATION===================
 
 def display_charts(records: pd.DataFrame) -> None:
     """Display sentiment and topic distributions."""
@@ -298,9 +282,7 @@ def display_charts(records: pd.DataFrame) -> None:
             )
 
 
-# ============================================================
-# 9. AI-GENERATED REPORTS
-# ============================================================
+# ==========================AI-GENERATED REPORTS================
 
 REPORT_FUNCTIONS = {
     "Positive Feedback": monitor.generate_positive_report_summary,
@@ -357,9 +339,7 @@ def display_reports(records: pd.DataFrame, brand: str) -> None:
         st.markdown(st.session_state["report"])
 
 
-# ============================================================
-# 10. MAIN DASHBOARD
-# ============================================================
+# ==========================MAIN DASHBOARD====================
 
 def display_dashboard(brand: str, records: pd.DataFrame) -> None:
     st.title("📊 Brand Reputation Dashboard")
@@ -397,9 +377,7 @@ def display_dashboard(brand: str, records: pd.DataFrame) -> None:
         )
 
 
-# ============================================================
-# 11. APPLICATION ENTRY POINT
-# ============================================================
+# ============================APPLICATION ENTRY POINT===============
 
 def main():
     brand, records = render_sidebar()
