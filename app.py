@@ -1,143 +1,436 @@
 import streamlit as st
-import backend_utils as bu
+import pandas as pd
 import plotly.express as px
 
-# --- Page Configuration ---
+from src.brand_monitoring_ollama import backend as monitor
+
+
+# --------------------------------------------------
+# Application Configuration
+# --------------------------------------------------
+
 st.set_page_config(
-    page_title="AI Hacker News Brand Monitor",
-    page_icon="🤖",
-    layout="wide"
+    page_title="BrandPulse AI",
+    page_icon="📡",
+    layout="wide",
 )
 
-# --- Initialize Database ---
-bu.init_db()
 
-# --- Streamlit Session State ---
-if 'brand_name' not in st.session_state:
-    st.session_state['brand_name'] = "OpenAI"
+# --------------------------------------------------
+# Database Initialization
+# --------------------------------------------------
 
-# --- Sidebar (Configuration & Actions) ---
-with st.sidebar:
-    st.title("🤖 Hand N BrMonitor")
-    st.info(f"Ollama (`{bu.DEFAULT_OLLAMA_MODEL}`) must be running locally.")
-
-    st.header("Configuration")
-    st.session_state.brand_name = st.text_input(
-        "Brand/Keyword to Monitor",
-        st.session_state.brand_name
-    )
-
-    # Added a slider so you can control how far back in time to search
-    pages_to_fetch = st.slider("Pages to fetch (50 results per page)", 1, 10, 3)
-
-    # --- Actions ---
-    if st.button("Fetch Hacker News Mentions"):
-        with st.spinner(f"Searching Hacker News for '{st.session_state.brand_name}'..."):
-            hn_count = bu.fetch_hn_mentions(st.session_state.brand_name, max_pages=pages_to_fetch)
-            st.success(f"Added {hn_count} new Hacker News comments.")
-            st.rerun()
-
-    # --- ANALYSIS PANEL ---
-    st.divider()
-    all_data_df = bu.get_all_mentions_as_df(st.session_state.brand_name)
-    if not all_data_df.empty:
-        all_data_df = bu.clean_html(all_data_df)
-
-    pending_df = all_data_df[all_data_df['sentiment'].isnull()]
+@st.cache_resource
+def setup_database():
+    monitor.init_db()
+    return True
 
 
-    st.info(f"**{len(pending_df)}** Pending Analysis")
+setup_database()
 
-    if not pending_df.empty:
-        if st.button(f"Analyze {len(pending_df)} Items"):
-            progress_bar = st.progress(0, text="Analyzing mentions via Ollama...")
-            total = len(pending_df)
 
-            for i, row in enumerate(pending_df.itertuples()):
-                text_to_analyze = row.text
-                sentiment = bu.get_sentiment(text_to_analyze)
-                topic = bu.get_topic(text_to_analyze)
-                urgency = bu.get_urgency(text_to_analyze)
+# --------------------------------------------------
+# Session State
+# --------------------------------------------------
 
-                if sentiment and topic and urgency:
-                    bu.update_mention_analysis(row.id, sentiment, topic, urgency)
+def initialize_session():
+    defaults = {
+        "brand": "OpenAI",
+        "report": None,
+        "report_type": None,
+        "report_brand": None,
+    }
 
-                progress_bar.progress((i + 1) / total, text=f"Analyzing item {i + 1}/{total}")
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-            progress_bar.empty()
-            st.success("Analysis complete!")
-            st.rerun()
 
-# --- Main Page Dashboard ---
-st.title(f"Brand Reputation Dashboard: {st.session_state.brand_name}")
+initialize_session()
 
-if not all_data_df.empty:
-    analyzed_df = all_data_df.dropna(subset=['sentiment']).copy()
 
-    tab1, tab2 = st.tabs(["Main Dashboard", "Raw Data"])
+# --------------------------------------------------
+# Data Access
+# --------------------------------------------------
 
-    # --- Tab 1: Main Dashboard ---
-    with tab1:
-        st.header("Overall Brand Sentiment")
+def load_brand_mentions(brand):
+    """Retrieve and prepare stored brand mentions."""
 
-        col1, col2 = st.columns(2)
+    records = monitor.get_all_mentions_as_df(brand)
 
-        with col1:
-            sentiment_counts = analyzed_df['sentiment'].value_counts()
-            if not sentiment_counts.empty:
-                fig_pie = px.pie(
-                    sentiment_counts,
-                    values=sentiment_counts.values,
-                    names=sentiment_counts.index,
-                    title="Sentiment Breakdown",
-                    color=sentiment_counts.index,
-                    color_discrete_map={'Negative': 'red', 'Positive': 'green', 'Neutral': 'blue'}
+    if records.empty:
+        return records
+
+    return monitor.clean_html(records.copy())
+
+
+# --------------------------------------------------
+# Data Collection
+# --------------------------------------------------
+
+def collect_mentions(brand, pages):
+    """Fetch recent Hacker News discussions."""
+
+    if not brand.strip():
+        st.warning("Enter a brand name before searching.")
+        return
+
+    with st.spinner(f"Collecting mentions for {brand}..."):
+        try:
+            count = monitor.fetch_hn_mentions(
+                brand_name=brand,
+                max_pages=pages,
+            )
+        except Exception as exc:
+            st.error(f"Unable to collect mentions: {exc}")
+            return
+
+    st.success(f"{count} new mentions collected.")
+    st.rerun()
+
+
+# --------------------------------------------------
+# AI Classification
+# --------------------------------------------------
+
+def classify_mentions(pending_records):
+    """Analyze unprocessed mentions using Ollama."""
+
+    total = len(pending_records)
+    completed = 0
+    failed = 0
+
+    progress = st.progress(0, text="Starting AI analysis...")
+
+    for index, record in enumerate(
+        pending_records.itertuples(index=False),
+        start=1,
+    ):
+        try:
+            sentiment = monitor.get_sentiment(record.text)
+            topic = monitor.get_topic(record.text)
+            urgency = monitor.get_urgency(record.text)
+
+            if all([sentiment, topic, urgency]):
+                monitor.update_mention_analysis(
+                    record.id,
+                    sentiment,
+                    topic,
+                    urgency,
                 )
-                st.plotly_chart(fig_pie, use_container_width=True)
+                completed += 1
             else:
-                st.write("No sentiment data available.")
+                failed += 1
 
-        with col2:
-            topics_exploded = analyzed_df['topic'].str.split(',').explode().str.strip()
-            topic_counts = topics_exploded.value_counts()
+        except Exception as exc:
+            failed += 1
+            st.warning(
+                f"Could not analyze mention {record.id}: {exc}"
+            )
 
-            if not topic_counts.empty:
-                fig_bar = px.bar(
-                    topic_counts,
-                    x=topic_counts.index,
-                    y=topic_counts.values,
-                    title="Top Topics Identified",
-                    labels={'x': 'Topic', 'y': 'Count'}
-                )
-                st.plotly_chart(fig_bar, use_container_width=True)
-            else:
-                st.write("No topics found.")
+        progress.progress(
+            index / total,
+            text=f"Processed {index} of {total} mentions",
+        )
+
+    progress.empty()
+
+    if failed:
+        st.warning(
+            f"Analysis finished: {completed} successful, "
+            f"{failed} unsuccessful."
+        )
+    else:
+        st.success(f"Successfully analyzed {completed} mentions.")
+
+    st.rerun()
+
+
+# --------------------------------------------------
+# Sidebar
+# --------------------------------------------------
+
+def render_sidebar():
+    with st.sidebar:
+        st.title("📡 BrandPulse AI")
+        st.caption("AI-powered Hacker News brand intelligence")
+
+        st.info(
+            f"**Ollama model:** "
+            f"`{monitor.DEFAULT_OLLAMA_MODEL.strip()}`"
+        )
 
         st.divider()
-        st.header("Automated Insights")
 
-        col_pos, col_neg, col_sug = st.columns(3)
-        with col_pos:
-            if st.button("Summarize Positive Feedback"):
-                with st.spinner("Ollama is summarizing..."):
-                    summary = bu.generate_positive_report_summary(analyzed_df)
-                    st.markdown(summary)
+        st.subheader("Search Settings")
 
-        with col_neg:
-            if st.button("Summarize Negative Feedback"):
-                with st.spinner("Ollama is summarizing..."):
-                    summary = bu.generate_negative_report_summary(analyzed_df)
-                    st.markdown(summary)
+        brand = st.text_input(
+            "Brand or keyword",
+            key="brand",
+            placeholder="e.g. OpenAI",
+        ).strip()
 
-        with col_sug:
-            if st.button("Generate Suggestions"):
-                with st.spinner("Ollama is brainstorming..."):
-                    summary = bu.generate_report_summary(analyzed_df)
-                    st.markdown(summary)
+        page_count = st.slider(
+            "Search depth (50 comments per page)",
+            min_value=1,
+            max_value=10,
+            value=3,
+        )
 
-    # --- Tab 2: Raw Data ---
-    with tab2:
-        st.header(f"Hacker News Data for '{st.session_state.brand_name}'")
-        st.dataframe(all_data_df, use_container_width=True, hide_index=True)
-else:
-    st.info("No data fetched yet. Use the sidebar to search Hacker News!")
+        if st.button(
+            "Fetch Mentions",
+            use_container_width=True,
+            type="primary",
+        ):
+            collect_mentions(brand, page_count)
+
+        st.divider()
+
+        data = load_brand_mentions(brand) if brand else pd.DataFrame()
+
+        pending = (
+            data[data["sentiment"].isna()]
+            if not data.empty
+            else pd.DataFrame()
+        )
+
+        st.metric("Pending Analysis", len(pending))
+
+        if not pending.empty:
+            if st.button(
+                f"Analyze {len(pending)} Mentions",
+                use_container_width=True,
+            ):
+                classify_mentions(pending)
+
+    return brand, data
+
+
+# --------------------------------------------------
+# Dashboard Metrics
+# --------------------------------------------------
+
+def render_metrics(records):
+    total = len(records)
+
+    analyzed = records.dropna(
+        subset=["sentiment", "topic", "urgency"]
+    )
+
+    positive = (
+        analyzed["sentiment"]
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .eq("positive")
+        .sum()
+    )
+
+    negative = (
+        analyzed["sentiment"]
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .eq("negative")
+        .sum()
+    )
+
+    high_risk = (
+        analyzed["urgency"]
+        .astype(str)
+        .str.strip()
+        .str.casefold()
+        .eq("high urgency")
+        .sum()
+    )
+
+    columns = st.columns(4)
+
+    columns[0].metric("Total Mentions", total)
+    columns[1].metric("Positive", int(positive))
+    columns[2].metric("Negative", int(negative))
+    columns[3].metric("High Urgency", int(high_risk))
+
+
+# --------------------------------------------------
+# Sentiment and Topic Charts
+# --------------------------------------------------
+
+def render_visualizations(records):
+    analyzed = records.dropna(subset=["sentiment"]).copy()
+
+    left, right = st.columns(2)
+
+    with left:
+        st.subheader("Sentiment Distribution")
+
+        sentiment_counts = (
+            analyzed["sentiment"]
+            .astype(str)
+            .str.strip()
+            .value_counts()
+            .rename_axis("Sentiment")
+            .reset_index(name="Mentions")
+        )
+
+        if sentiment_counts.empty:
+            st.info("No sentiment analysis available.")
+        else:
+            chart = px.pie(
+                sentiment_counts,
+                names="Sentiment",
+                values="Mentions",
+                hole=0.4,
+                color="Sentiment",
+                color_discrete_map={
+                    "Positive": "#16A34A",
+                    "Negative": "#DC2626",
+                    "Neutral": "#64748B",
+                },
+            )
+
+            st.plotly_chart(
+                chart,
+                use_container_width=True,
+            )
+
+    with right:
+        st.subheader("Discussion Topics")
+
+        topic_counts = (
+            analyzed["topic"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .value_counts()
+            .rename_axis("Topic")
+            .reset_index(name="Mentions")
+        )
+
+        if topic_counts.empty:
+            st.info("No classified topics available.")
+        else:
+            chart = px.bar(
+                topic_counts,
+                x="Topic",
+                y="Mentions",
+                color="Topic",
+            )
+
+            chart.update_layout(
+                showlegend=False,
+                xaxis_tickangle=-35,
+            )
+
+            st.plotly_chart(
+                chart,
+                use_container_width=True,
+            )
+
+
+# --------------------------------------------------
+# AI-Generated Business Insights
+# --------------------------------------------------
+
+REPORT_GENERATORS = {
+    "Positive Feedback": monitor.generate_positive_report_summary,
+    "Negative Feedback": monitor.generate_negative_report_summary,
+    "Product Suggestions": monitor.generate_report_summary,
+}
+
+
+def render_insights(records, brand):
+    st.subheader("AI-Generated Insights")
+
+    analyzed = records.dropna(subset=["sentiment"]).copy()
+
+    if analyzed.empty:
+        st.info("Analyze some mentions to generate insights.")
+        return
+
+    report_columns = st.columns(3)
+
+    for column, (label, generator) in zip(
+        report_columns,
+        REPORT_GENERATORS.items(),
+    ):
+        with column:
+            if st.button(label, use_container_width=True):
+                with st.spinner(f"Generating {label.lower()}..."):
+                    try:
+                        result = generator(analyzed)
+
+                        st.session_state.report = result
+                        st.session_state.report_type = label
+                        st.session_state.report_brand = brand
+
+                    except Exception as exc:
+                        st.error(f"Report generation failed: {exc}")
+
+    if (
+        st.session_state.report
+        and st.session_state.report_brand == brand
+    ):
+        st.divider()
+        st.markdown(
+            f"#### {st.session_state.report_type}"
+        )
+        st.markdown(st.session_state.report)
+
+
+# --------------------------------------------------
+# Main Dashboard
+# --------------------------------------------------
+
+def render_dashboard(brand, records):
+    st.title("📊 Brand Reputation Intelligence")
+    st.caption(f"Monitoring Hacker News discussions about {brand}")
+
+    if records.empty:
+        st.info(
+            "No mentions found yet. "
+            "Use the sidebar to collect Hacker News comments."
+        )
+        return
+
+    render_metrics(records)
+
+    st.divider()
+
+    overview_tab, mentions_tab = st.tabs(
+        ["Analytics", "Mention Explorer"]
+    )
+
+    with overview_tab:
+        render_visualizations(records)
+
+        st.divider()
+
+        render_insights(records, brand)
+
+    with mentions_tab:
+        st.subheader(f"Collected Mentions: {brand}")
+
+        st.dataframe(
+            records,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+# --------------------------------------------------
+# Application Entry Point
+# --------------------------------------------------
+
+def main():
+    brand, records = render_sidebar()
+
+    if not brand:
+        st.warning("Please enter a brand or keyword.")
+        return
+
+    render_dashboard(brand, records)
+
+
+if __name__ == "__main__":
+    main()
