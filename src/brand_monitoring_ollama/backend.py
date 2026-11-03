@@ -218,11 +218,8 @@ def fetch_hn_mentions(brand_name: str, max_pages: int = 3) -> int:
     except (requests.RequestException, ValueError) as exc:
         _report_error(f"Hacker News request failed: {exc}")
     return inserted
-# --------------------------------------------------------------------------- #
 
-# LLM analysis: ONE call per mention returns sentiment, topic and urgency
-# --------------------------------------------------------------------------- #
-
+# --------LLM analysis: ONE call per mention returns sentiment, topic and urgency-------#
 Sentiment = Literal["Positive", "Negative", "Neutral"]
 Topic = Literal[
     "Customer Service Issue",
