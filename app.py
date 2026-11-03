@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -5,9 +6,9 @@ import plotly.express as px
 from src.brand_monitoring_ollama import backend as monitor
 
 
-# --------------------------------------------------
-# Application Configuration
-# --------------------------------------------------
+# ============================================================
+# 1. STREAMLIT CONFIGURATION
+# ============================================================
 
 st.set_page_config(
     page_title="BrandPulse AI",
@@ -16,28 +17,24 @@ st.set_page_config(
 )
 
 
-# --------------------------------------------------
-# Database Initialization
-# --------------------------------------------------
+# ============================================================
+# 2. INITIALIZATION
+# ============================================================
 
 @st.cache_resource
-def setup_database():
+def initialize_database():
     monitor.init_db()
     return True
 
 
-setup_database()
+initialize_database()
 
 
-# --------------------------------------------------
-# Session State
-# --------------------------------------------------
-
-def initialize_session():
+def initialize_state():
     defaults = {
         "brand": "OpenAI",
         "report": None,
-        "report_type": None,
+        "report_title": None,
         "report_brand": None,
     }
 
@@ -46,370 +43,352 @@ def initialize_session():
             st.session_state[key] = value
 
 
-initialize_session()
+initialize_state()
 
 
-# --------------------------------------------------
-# Data Access
-# --------------------------------------------------
+# ============================================================
+# 3. DATA ACCESS
+# ============================================================
 
-def load_brand_mentions(brand):
-    """Retrieve and prepare stored brand mentions."""
+def get_brand_data(brand: str) -> pd.DataFrame:
+    """Load and clean stored Hacker News mentions."""
 
-    records = monitor.get_all_mentions_as_df(brand)
+    data = monitor.get_all_mentions_as_df(brand)
 
-    if records.empty:
-        return records
+    if data.empty:
+        return data
 
-    return monitor.clean_html(records.copy())
+    return monitor.clean_html(data)
 
 
-# --------------------------------------------------
-# Data Collection
-# --------------------------------------------------
+# ============================================================
+# 4. DATA COLLECTION
+# ============================================================
 
-def collect_mentions(brand, pages):
-    """Fetch recent Hacker News discussions."""
+def fetch_brand_mentions(brand: str, pages: int) -> None:
+    """Collect brand discussions from Hacker News."""
 
-    if not brand.strip():
-        st.warning("Enter a brand name before searching.")
+    if not brand:
+        st.warning("Please enter a brand name.")
         return
 
-    with st.spinner(f"Collecting mentions for {brand}..."):
+    with st.spinner(f"Searching Hacker News for '{brand}'..."):
         try:
-            count = monitor.fetch_hn_mentions(
+            new_mentions = monitor.fetch_hn_mentions(
                 brand_name=brand,
                 max_pages=pages,
             )
-        except Exception as exc:
-            st.error(f"Unable to collect mentions: {exc}")
+        except Exception as error:
+            st.error(f"Data collection failed: {error}")
             return
 
-    st.success(f"{count} new mentions collected.")
+    st.toast(f"Collected {new_mentions} new mentions.")
     st.rerun()
 
 
-# --------------------------------------------------
-# AI Classification
-# --------------------------------------------------
+# ============================================================
+# 5. OLLAMA ANALYSIS
+# ============================================================
 
-def classify_mentions(pending_records):
-    """Analyze unprocessed mentions using Ollama."""
+def analyze_brand_mentions(brand: str, pending_count: int) -> None:
+    """Classify pending mentions using the backend batch processor."""
 
-    total = len(pending_records)
-    completed = 0
-    failed = 0
+    progress = st.progress(0, text="Preparing AI analysis...")
 
-    progress = st.progress(0, text="Starting AI analysis...")
-
-    for index, record in enumerate(
-        pending_records.itertuples(index=False),
-        start=1,
-    ):
-        try:
-            sentiment = monitor.get_sentiment(record.text)
-            topic = monitor.get_topic(record.text)
-            urgency = monitor.get_urgency(record.text)
-
-            if all([sentiment, topic, urgency]):
-                monitor.update_mention_analysis(
-                    record.id,
-                    sentiment,
-                    topic,
-                    urgency,
-                )
-                completed += 1
-            else:
-                failed += 1
-
-        except Exception as exc:
-            failed += 1
-            st.warning(
-                f"Could not analyze mention {record.id}: {exc}"
-            )
-
+    def update_progress(completed: int, total: int) -> None:
         progress.progress(
-            index / total,
-            text=f"Processed {index} of {total} mentions",
+            completed / total,
+            text=f"Analyzing {completed}/{total} mentions",
         )
+
+    try:
+        analyzed_count = monitor.analyze_pending(
+            brand_name=brand,
+            max_workers=2,
+            on_progress=update_progress,
+        )
+
+    except Exception as error:
+        progress.empty()
+        st.error(f"AI analysis failed: {error}")
+        return
 
     progress.empty()
 
-    if failed:
-        st.warning(
-            f"Analysis finished: {completed} successful, "
-            f"{failed} unsuccessful."
-        )
+    if analyzed_count == pending_count:
+        st.success(f"Successfully analyzed {analyzed_count} mentions.")
     else:
-        st.success(f"Successfully analyzed {completed} mentions.")
+        st.warning(
+            f"Analyzed {analyzed_count} of {pending_count} mentions. "
+            "Some items may require another attempt."
+        )
 
     st.rerun()
 
 
-# --------------------------------------------------
-# Sidebar
-# --------------------------------------------------
+# ============================================================
+# 6. SIDEBAR
+# ============================================================
 
 def render_sidebar():
     with st.sidebar:
         st.title("📡 BrandPulse AI")
-        st.caption("AI-powered Hacker News brand intelligence")
+        st.caption("Hacker News brand monitoring with Ollama")
 
-        st.info(
-            f"**Ollama model:** "
-            f"`{monitor.DEFAULT_OLLAMA_MODEL.strip()}`"
-        )
+        st.info(f"**Ollama Model:** `{monitor.MODEL}`")
 
         st.divider()
 
-        st.subheader("Search Settings")
+        st.subheader("Monitoring Settings")
 
         brand = st.text_input(
-            "Brand or keyword",
+            "Brand or Keyword",
             key="brand",
-            placeholder="e.g. OpenAI",
+            placeholder="Enter a brand name",
         ).strip()
 
-        page_count = st.slider(
-            "Search depth (50 comments per page)",
+        pages = st.slider(
+            "Pages to Fetch",
             min_value=1,
             max_value=10,
             value=3,
+            help="Each page contains up to 50 Hacker News comments.",
         )
 
         if st.button(
-            "Fetch Mentions",
-            use_container_width=True,
+            "Fetch Hacker News Mentions",
             type="primary",
+            use_container_width=True,
         ):
-            collect_mentions(brand, page_count)
+            fetch_brand_mentions(brand, pages)
 
         st.divider()
 
-        data = load_brand_mentions(brand) if brand else pd.DataFrame()
-
-        pending = (
-            data[data["sentiment"].isna()]
-            if not data.empty
+        records = (
+            get_brand_data(brand)
+            if brand
             else pd.DataFrame()
         )
 
-        st.metric("Pending Analysis", len(pending))
+        pending = (
+            records[records["sentiment"].isna()]
+            if not records.empty
+            else pd.DataFrame()
+        )
 
-        if not pending.empty:
+        pending_count = len(pending)
+
+        st.metric("Pending Analysis", pending_count)
+
+        if pending_count > 0:
             if st.button(
-                f"Analyze {len(pending)} Mentions",
+                f"Analyze {pending_count} Mentions",
                 use_container_width=True,
             ):
-                classify_mentions(pending)
+                analyze_brand_mentions(brand, pending_count)
 
-    return brand, data
+    return brand, records
 
 
-# --------------------------------------------------
-# Dashboard Metrics
-# --------------------------------------------------
+# ============================================================
+# 7. DASHBOARD METRICS
+# ============================================================
 
-def render_metrics(records):
-    total = len(records)
+def display_metrics(records: pd.DataFrame) -> None:
+    """Display important brand monitoring statistics."""
+
+    total_mentions = len(records)
 
     analyzed = records.dropna(
         subset=["sentiment", "topic", "urgency"]
     )
 
-    positive = (
-        analyzed["sentiment"]
-        .astype(str)
-        .str.strip()
-        .str.casefold()
-        .eq("positive")
-        .sum()
+    sentiment_values = (
+        analyzed["sentiment"].astype(str).str.strip()
     )
 
-    negative = (
-        analyzed["sentiment"]
-        .astype(str)
-        .str.strip()
-        .str.casefold()
-        .eq("negative")
-        .sum()
+    urgency_values = (
+        analyzed["urgency"].astype(str).str.strip()
     )
 
-    high_risk = (
-        analyzed["urgency"]
-        .astype(str)
-        .str.strip()
-        .str.casefold()
-        .eq("high urgency")
-        .sum()
-    )
+    positive_count = sentiment_values.eq("Positive").sum()
+    negative_count = sentiment_values.eq("Negative").sum()
+    high_urgency_count = urgency_values.eq("High Urgency").sum()
 
-    columns = st.columns(4)
+    col1, col2, col3, col4 = st.columns(4)
 
-    columns[0].metric("Total Mentions", total)
-    columns[1].metric("Positive", int(positive))
-    columns[2].metric("Negative", int(negative))
-    columns[3].metric("High Urgency", int(high_risk))
+    col1.metric("Total Mentions", total_mentions)
+    col2.metric("Positive", int(positive_count))
+    col3.metric("Negative", int(negative_count))
+    col4.metric("High Urgency", int(high_urgency_count))
 
 
-# --------------------------------------------------
-# Sentiment and Topic Charts
-# --------------------------------------------------
+# ============================================================
+# 8. DATA VISUALIZATION
+# ============================================================
 
-def render_visualizations(records):
-    analyzed = records.dropna(subset=["sentiment"]).copy()
+def display_charts(records: pd.DataFrame) -> None:
+    """Display sentiment and topic distributions."""
 
-    left, right = st.columns(2)
+    analyzed = records.dropna(
+        subset=["sentiment", "topic", "urgency"]
+    ).copy()
 
-    with left:
-        st.subheader("Sentiment Distribution")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Sentiment Analysis")
 
         sentiment_counts = (
             analyzed["sentiment"]
-            .astype(str)
-            .str.strip()
             .value_counts()
             .rename_axis("Sentiment")
-            .reset_index(name="Mentions")
+            .reset_index(name="Count")
         )
 
         if sentiment_counts.empty:
-            st.info("No sentiment analysis available.")
+            st.info("No sentiment data available.")
         else:
-            chart = px.pie(
+            sentiment_chart = px.pie(
                 sentiment_counts,
                 names="Sentiment",
-                values="Mentions",
+                values="Count",
                 hole=0.4,
                 color="Sentiment",
                 color_discrete_map={
-                    "Positive": "#16A34A",
-                    "Negative": "#DC2626",
-                    "Neutral": "#64748B",
+                    "Positive": "#22C55E",
+                    "Negative": "#EF4444",
+                    "Neutral": "#3B82F6",
                 },
             )
 
             st.plotly_chart(
-                chart,
+                sentiment_chart,
                 use_container_width=True,
             )
 
-    with right:
+    with col2:
         st.subheader("Discussion Topics")
 
         topic_counts = (
             analyzed["topic"]
-            .dropna()
-            .astype(str)
-            .str.strip()
             .value_counts()
             .rename_axis("Topic")
-            .reset_index(name="Mentions")
+            .reset_index(name="Count")
         )
 
         if topic_counts.empty:
-            st.info("No classified topics available.")
+            st.info("No topics have been classified yet.")
         else:
-            chart = px.bar(
+            topic_chart = px.bar(
                 topic_counts,
                 x="Topic",
-                y="Mentions",
+                y="Count",
                 color="Topic",
             )
 
-            chart.update_layout(
+            topic_chart.update_layout(
                 showlegend=False,
-                xaxis_tickangle=-35,
+                xaxis_tickangle=-30,
             )
 
             st.plotly_chart(
-                chart,
+                topic_chart,
                 use_container_width=True,
             )
 
 
-# --------------------------------------------------
-# AI-Generated Business Insights
-# --------------------------------------------------
+# ============================================================
+# 9. AI-GENERATED REPORTS
+# ============================================================
 
-REPORT_GENERATORS = {
+REPORT_FUNCTIONS = {
     "Positive Feedback": monitor.generate_positive_report_summary,
     "Negative Feedback": monitor.generate_negative_report_summary,
     "Product Suggestions": monitor.generate_report_summary,
 }
 
 
-def render_insights(records, brand):
-    st.subheader("AI-Generated Insights")
+def display_reports(records: pd.DataFrame, brand: str) -> None:
+    """Generate and display AI-powered brand insights."""
 
-    analyzed = records.dropna(subset=["sentiment"]).copy()
+    st.subheader("AI-Generated Business Insights")
+
+    analyzed = records.dropna(
+        subset=["sentiment", "topic", "urgency"]
+    )
 
     if analyzed.empty:
-        st.info("Analyze some mentions to generate insights.")
+        st.info("Analyze some mentions to generate reports.")
         return
 
-    report_columns = st.columns(3)
+    columns = st.columns(3)
 
-    for column, (label, generator) in zip(
-        report_columns,
-        REPORT_GENERATORS.items(),
+    for column, (title, report_function) in zip(
+        columns,
+        REPORT_FUNCTIONS.items(),
     ):
         with column:
-            if st.button(label, use_container_width=True):
-                with st.spinner(f"Generating {label.lower()}..."):
+            if st.button(
+                title,
+                use_container_width=True,
+            ):
+                with st.spinner(f"Generating {title.lower()}..."):
                     try:
-                        result = generator(analyzed)
+                        report = report_function(analyzed)
 
-                        st.session_state.report = result
-                        st.session_state.report_type = label
-                        st.session_state.report_brand = brand
+                        st.session_state["report"] = report
+                        st.session_state["report_title"] = title
+                        st.session_state["report_brand"] = brand
 
-                    except Exception as exc:
-                        st.error(f"Report generation failed: {exc}")
+                    except Exception as error:
+                        st.error(f"Report generation failed: {error}")
 
     if (
-        st.session_state.report
-        and st.session_state.report_brand == brand
+        st.session_state["report"]
+        and st.session_state["report_brand"] == brand
     ):
         st.divider()
+
         st.markdown(
-            f"#### {st.session_state.report_type}"
+            f"### {st.session_state['report_title']}"
         )
-        st.markdown(st.session_state.report)
+
+        st.markdown(st.session_state["report"])
 
 
-# --------------------------------------------------
-# Main Dashboard
-# --------------------------------------------------
+# ============================================================
+# 10. MAIN DASHBOARD
+# ============================================================
 
-def render_dashboard(brand, records):
-    st.title("📊 Brand Reputation Intelligence")
-    st.caption(f"Monitoring Hacker News discussions about {brand}")
+def display_dashboard(brand: str, records: pd.DataFrame) -> None:
+    st.title("📊 Brand Reputation Dashboard")
+    st.caption(f"Tracking Hacker News conversations about {brand}")
 
     if records.empty:
         st.info(
-            "No mentions found yet. "
-            "Use the sidebar to collect Hacker News comments."
+            "No mentions available. "
+            "Use the sidebar to fetch Hacker News comments."
         )
         return
 
-    render_metrics(records)
+    display_metrics(records)
 
     st.divider()
 
-    overview_tab, mentions_tab = st.tabs(
-        ["Analytics", "Mention Explorer"]
+    dashboard_tab, data_tab = st.tabs(
+        ["Analytics Dashboard", "Raw Mentions"]
     )
 
-    with overview_tab:
-        render_visualizations(records)
+    with dashboard_tab:
+        display_charts(records)
 
         st.divider()
 
-        render_insights(records, brand)
+        display_reports(records, brand)
 
-    with mentions_tab:
-        st.subheader(f"Collected Mentions: {brand}")
+    with data_tab:
+        st.subheader(f"Hacker News Mentions: {brand}")
 
         st.dataframe(
             records,
@@ -418,18 +397,18 @@ def render_dashboard(brand, records):
         )
 
 
-# --------------------------------------------------
-# Application Entry Point
-# --------------------------------------------------
+# ============================================================
+# 11. APPLICATION ENTRY POINT
+# ============================================================
 
 def main():
     brand, records = render_sidebar()
 
     if not brand:
-        st.warning("Please enter a brand or keyword.")
+        st.warning("Enter a brand name to continue.")
         return
 
-    render_dashboard(brand, records)
+    display_dashboard(brand, records)
 
 
 if __name__ == "__main__":
